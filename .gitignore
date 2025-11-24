@@ -1,0 +1,15 @@
+# env
+.env
+.env.*
+
+# venv
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# out/logs
+out/
+*.log
