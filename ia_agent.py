@@ -44,43 +44,42 @@ def get_contele_schema_info() -> str:
 
 ### contele.contele_os (OS's com objetivo definido)
 Colunas: task_id, os, poi, title, status, assignee_name, assignee_id, created_at, finished_at, updated_at, ingested_at, updated_at_local
+⚠️ ATENÇÃO: Esta tabela tem APENAS metadados básicos (não tem as respostas do formulário!)
 
 ### contele.contele_os_all (TODAS as OS's - com e sem objetivo)
 Colunas: task_id, os, poi, title, status, assignee_name, assignee_id, created_at, finished_at, updated_at, ingested_at, updated_at_local, has_objetivo
 
 ### contele.contele_answers (Respostas dos formulários - apenas com objetivo)
 Colunas: task_id, os, poi, form_title, question_id, question_title, answer_human, answer_raw, created_at, ingested_at
+⭐ TEM AS RESPOSTAS DO FORMULÁRIO (question_title, answer_human)
 
 ### contele.contele_answers_all (TODAS as respostas)
 Colunas: task_id, os, poi, form_title, question_id, question_title, answer_human, answer_raw, created_at, ingested_at
 
 ## 🔍 VIEWS ANALÍTICAS - COLUNAS EXATAS
 
-### contele.vw_todas_os_respostas (View normalizada principal)
+### contele.vw_todas_os_respostas (View normalizada principal) ⭐⭐⭐ PREFERENCIAL PARA DETALHES
 Colunas: task_id, os, poi, form_title, question_title, answer_human, created_at, assignee_name, status, os_created_at, os_finished_at
 ⭐ USE ESTA para análises de respostas com informação do vendedor/técnico
+⭐ TEM TUDO: metadados da OS + todas as respostas do formulário
 
 ### contele.vw_prospeccao (Pivotada - Objetivo: Prospecção)
 Colunas FIXAS: task_id, os, poi, assignee_name, status, os_created_at, os_finished_at
 Colunas DINÂMICAS: perguntas específicas de prospecção como colunas
-⭐ AGORA TEM assignee_name e status!
 
 ### contele.vw_relacionamento (Pivotada - Objetivo: Relacionamento)
 Colunas FIXAS: task_id, os, poi, assignee_name, status, os_created_at, os_finished_at
 Colunas DINÂMICAS: perguntas específicas de relacionamento como colunas
-⭐ AGORA TEM assignee_name e status!
 
 ### contele.vw_levantamento_de_necessidade (Pivotada - Objetivo: Levantamento)
 Colunas FIXAS: task_id, os, poi, assignee_name, status, os_created_at, os_finished_at
 Colunas DINÂMICAS: perguntas específicas de levantamento como colunas
-⭐ AGORA TEM assignee_name e status!
 
 ### contele.vw_visita_tecnica (Pivotada - Objetivo: Visita Técnica)
 Colunas FIXAS: task_id, os, poi, assignee_name, status, os_created_at, os_finished_at
 Colunas DINÂMICAS: perguntas específicas de visita técnica como colunas
-⭐ AGORA TEM assignee_name e status!
 
-## 📊 VIEWS DE RESUMO (NOVAS!)
+## 📊 VIEWS DE RESUMO
 
 ### contele.vw_resumo_vendedores (Estatísticas por vendedor/técnico)
 Colunas: assignee_name, total_os, total_clientes, os_concluidas, os_pendentes, primeira_visita, ultima_visita, total_prospeccao, total_relacionamento, total_levantamento, total_visita_tecnica
@@ -94,47 +93,90 @@ Colunas: poi, total_visitas, total_vendedores_distintos, primeira_visita, ultima
 Colunas: mes, assignee_name, total_visitas, clientes_visitados, visitas_concluidas
 ⭐ USE ESTA para análises temporais/tendências!
 
+## 🚨 VIEWS DE PENDÊNCIAS
+
+### contele.vw_pendencias (OS's que geraram pendências)
+Colunas: task_id, os, poi, assignee_name, status, os_created_at, os_finished_at, tem_pendencia, descricao_pendencia, data_criacao_pendencia, pendencia_aberta
+⭐ USE ESTA para análises de pendências geradas por OS's!
+- tem_pendencia: 'Sim' ou 'Não' (se gerou pendência)
+- descricao_pendencia: Texto descritivo da pendência
+- pendencia_aberta: true (OS não concluída) ou false (OS já finalizada)
+
+### contele.vw_resumo_pendencias_vendedor (Estatísticas de pendências por vendedor)
+Colunas: assignee_name, total_pendencias, pendencias_abertas, pendencias_fechadas, pendencia_mais_antiga, pendencia_mais_recente, clientes_com_pendencia_aberta
+⭐ USE ESTA para ranking/análise de pendências por vendedor!
+
+### contele.vw_resumo_pendencias_cliente (Estatísticas de pendências por cliente)
+Colunas: poi, total_pendencias, pendencias_abertas, pendencias_fechadas, primeira_pendencia, ultima_pendencia, vendedores_responsaveis
+⭐ USE ESTA para análises de pendências por cliente/POI!
+
 ## 💡 REGRAS PARA SQL - MUITO IMPORTANTE!
 
-1. **Para análises de vendedores/técnicos:**
-   - Ranking/Top: USE contele.vw_resumo_vendedores
-   - Detalhes de OS's: USE contele.contele_os
-   - Tem: assignee_name, status, datas
+### 🎯 REGRA #1 - DETALHES/RESUMO DE UMA OS ESPECÍFICA
+Quando pedirem "resumo", "detalhes", "o que foi feito", "o que diz", "relata", "informações" sobre uma OS:
+✅ SEMPRE USE: contele.vw_todas_os_respostas
+❌ NUNCA USE: contele.contele_os (só tem metadados básicos, não tem respostas!)
 
-2. **Para análises de clientes:**
-   - Ranking/Top: USE contele.vw_resumo_clientes
-   - Detalhes: USE contele.contele_os com GROUP BY poi
+Exemplos de perguntas que precisam de vw_todas_os_respostas:
+- "Me passe o resumo da OS 5078"
+- "O que diz a OS 5078"
+- "O que foi feito na OS 5078"
+- "Detalhes da OS 5078"
+- "Informações da OS 5078"
+- "O que relata a OS 5078"
 
-3. **Para análises de respostas:**
-   - USE: contele.vw_todas_os_respostas
-   - Tem: question_title, answer_human, assignee_name
+Query correta:
+SELECT question_title, answer_human, assignee_name, status, poi
+FROM contele.vw_todas_os_respostas
+WHERE os = '5078'
+ORDER BY question_title
+LIMIT 100;
 
-4. **Para análises por objetivo específico:**
-   - Prospecção: USE contele.vw_prospeccao
-   - Relacionamento: USE contele.vw_relacionamento
-   - Levantamento: USE contele.vw_levantamento_de_necessidade
-   - Visita Técnica: USE contele.vw_visita_tecnica
-   - TODAS têm assignee_name agora!
+### 2. Para análises de vendedores/técnicos:
+- Ranking/Top: USE contele.vw_resumo_vendedores
+- Detalhes de OS's: USE contele.contele_os
+- Tem: assignee_name, status, datas
 
-5. **Para análises temporais:**
-   - USE: contele.vw_timeline_atividades (últimos 6 meses)
-   - OU: contele.contele_os com DATE_TRUNC
+### 3. Para análises de clientes:
+- Ranking/Top: USE contele.vw_resumo_clientes
+- Detalhes: USE contele.contele_os com GROUP BY poi
 
-6. **SEMPRE use LIMIT (máximo 1000)**
+### 4. Para análises por objetivo específico:
+- Prospecção: USE contele.vw_prospeccao
+- Relacionamento: USE contele.vw_relacionamento
+- Levantamento: USE contele.vw_levantamento_de_necessidade
+- Visita Técnica: USE contele.vw_visita_tecnica
 
-7. **Para buscar texto use ILIKE '%termo%'**
+### 5. Para análises de pendências:
+- Listar pendências: USE contele.vw_pendencias
+- Ranking por vendedor: USE contele.vw_resumo_pendencias_vendedor
+- Ranking por cliente: USE contele.vw_resumo_pendencias_cliente
 
-8. **NUNCA use MAX(CASE...) ou COUNT(CASE...) dentro de GROUP BY**
+### 6. Para análises temporais:
+- USE: contele.vw_timeline_atividades (últimos 6 meses)
+- OU: contele.contele_os com DATE_TRUNC
+
+### 7. Outras regras:
+- SEMPRE use LIMIT (máximo 1000)
+- Para buscar texto use ILIKE '%termo%'
+- NUNCA use MAX(CASE...) ou COUNT(CASE...) dentro de GROUP BY
 
 ## 📌 EXEMPLOS CORRETOS - ATUALIZADOS
 
-### Ranking de vendedores (RÁPIDO):
+### 🎯 RESUMO/DETALHES DE UMA OS (MAIS IMPORTANTE):
+SELECT question_title, answer_human, assignee_name, status, poi, os_created_at
+FROM contele.vw_todas_os_respostas
+WHERE os = '5078'
+ORDER BY question_title
+LIMIT 100;
+
+### Ranking de vendedores:
 SELECT assignee_name, total_os, total_clientes, os_concluidas
 FROM contele.vw_resumo_vendedores
 ORDER BY total_os DESC
 LIMIT 20;
 
-### Top 10 clientes (RÁPIDO):
+### Top 10 clientes:
 SELECT poi, total_visitas, vendedores, primeira_visita, ultima_visita
 FROM contele.vw_resumo_clientes
 ORDER BY total_visitas DESC
@@ -144,6 +186,42 @@ LIMIT 10;
 SELECT mes, assignee_name, total_visitas, clientes_visitados
 FROM contele.vw_timeline_atividades
 ORDER BY mes DESC, total_visitas DESC
+LIMIT 100;
+
+### 🚨 PENDÊNCIAS - EXEMPLOS:
+
+### Listar todas as pendências abertas:
+SELECT os, poi, assignee_name, descricao_pendencia, data_criacao_pendencia, status
+FROM contele.vw_pendencias
+WHERE pendencia_aberta = true
+ORDER BY data_criacao_pendencia DESC
+LIMIT 100;
+
+### Ranking de vendedores com mais pendências abertas:
+SELECT assignee_name, total_pendencias, pendencias_abertas, pendencias_fechadas, pendencia_mais_antiga
+FROM contele.vw_resumo_pendencias_vendedor
+ORDER BY pendencias_abertas DESC
+LIMIT 20;
+
+### Clientes com pendências abertas:
+SELECT poi, pendencias_abertas, vendedores_responsaveis, ultima_pendencia
+FROM contele.vw_resumo_pendencias_cliente
+WHERE pendencias_abertas > 0
+ORDER BY pendencias_abertas DESC
+LIMIT 50;
+
+### Pendências de um vendedor específico:
+SELECT os, poi, descricao_pendencia, data_criacao_pendencia, status, pendencia_aberta
+FROM contele.vw_pendencias
+WHERE assignee_name ILIKE '%nome%'
+ORDER BY pendencia_aberta DESC, data_criacao_pendencia DESC
+LIMIT 50;
+
+### Histórico completo de pendências (abertas + fechadas):
+SELECT os, poi, assignee_name, descricao_pendencia, status, 
+       CASE WHEN pendencia_aberta THEN 'ABERTA' ELSE 'FECHADA' END as situacao
+FROM contele.vw_pendencias
+ORDER BY pendencia_aberta DESC, data_criacao_pendencia DESC
 LIMIT 100;
 
 ### Contar OS's por objetivo:
@@ -166,7 +244,7 @@ FROM contele.vw_todas_os_respostas
 WHERE answer_human ILIKE '%termo%'
 LIMIT 100;
 
-### OS's por status:
+### OS's por status (apenas listagem, sem detalhes):
 SELECT status, COUNT(*) as total
 FROM contele.contele_os
 GROUP BY status
@@ -202,42 +280,76 @@ def detectar_tipo_pergunta(pergunta: str) -> str:
     # Meta-perguntas (sobre a própria IA)
     meta_keywords = [
         "quem é você", "quem você é", "quem voce é", "quem voce e",
-        "o que você faz", "o que voce faz", "qual seu objetivo",
+        "o que você faz", "o que voce faz", 
         "para que serve", "sua função", "sua individualidade", 
         "se apresente", "seu papel", "sua especialidade", 
         "quem és", "qual é seu nome", "qual e seu nome",
-        "o que você consegue", "suas capacidades", 
-        "que tipo de pergunta", "pode me ajudar", "consegue",
-        "ajuda", "help", "como funciona"
+        "o que você consegue fazer", "suas capacidades específicas",
+        "como você funciona internamente", "que tipo de pergunta"
     ]
     
-    # Palavras-chave que indicam perguntas sobre DADOS
+    # Palavras-chave que indicam perguntas sobre DADOS (PRIORIDADE MAIOR)
     dados_keywords = [
         "quantas", "quantos", "quanto", "total", "soma", "média", "media",
         "mostre", "liste", "exiba", "busque", "encontre", "procure",
-        "os's", "visita", "cliente", "vendedor", "técnico", "tecnico",
+        "os", "os's", "visita", "cliente", "vendedor", "técnico", "tecnico",
         "poi", "task", "objetivo", "prospecção", "prospeccao",
         "relacionamento", "levantamento", "ranking", "top",
         "último", "ultima", "mês", "mes", "ano", "período", "periodo",
         "status", "concluída", "concluida", "pendente", "finalizada",
-        "comparar", "comparação", "comparacao", "diferença", "diferenca"
+        "comparar", "comparação", "comparacao", "diferença", "diferenca",
+        "resumo", "detalhes", "informações", "informacoes", "relata",
+        "foi feito", "diz", "sobre", "aprofundar", "mais sobre",
+        "essa os", "desta os", "da os", "essa visita", "esse cliente",
+        "consegue", "pode", "pendência", "pendencias"
     ]
     
-    # Verifica conversas casuais primeiro (mais específicas)
+    # Verifica conversas casuais primeiro
     if any(casual == pergunta_lower or pergunta_lower.startswith(casual) for casual in conversas_casuais):
         return 'casual'
     
-    # Verifica meta-perguntas
-    if any(meta in pergunta_lower for meta in meta_keywords):
-        return 'meta'
-    
-    # Verifica perguntas sobre dados
+    # Verifica perguntas sobre dados ANTES de meta
     if any(dado in pergunta_lower for dado in dados_keywords):
         return 'dados'
     
-    # Se não detectou nada específico, assume que é pergunta sobre dados
-    # (para não bloquear perguntas válidas)
+    # Verifica meta-perguntas por último
+    if any(meta in pergunta_lower for meta in meta_keywords):
+        return 'meta'
+    
     return 'dados'
+
+def validar_e_corrigir_sql(sql: str) -> tuple:
+    """🔒 Valida SQL e tenta corrigir erros comuns (SEGURANÇA)"""
+    sql_limpo = sql.strip()
+    
+    # Remover markdown se houver
+    sql_limpo = sql_limpo.replace("```sql", "").replace("```", "").strip()
+    
+    # Verificar se começa com SELECT ou WITH
+    sql_upper = sql_limpo.upper()
+    if not (sql_upper.startswith('SELECT') or sql_upper.startswith('WITH')):
+        return False, "❌ SQL deve começar com SELECT ou WITH (somente consultas permitidas)"
+    
+    # Bloquear comandos perigosos (somente leitura)
+    comandos_bloqueados = ['DROP', 'DELETE', 'UPDATE', 'INSERT', 'TRUNCATE', 'ALTER', 'CREATE', 'GRANT', 'REVOKE']
+    for cmd in comandos_bloqueados:
+        # Buscar o comando isolado (não dentro de palavras)
+        if f' {cmd} ' in f' {sql_upper} ' or sql_upper.startswith(f'{cmd} '):
+            return False, f"❌ Comando {cmd} não permitido (somente consultas SELECT)"
+    
+    # Verificar se tem LIMIT (adicionar se não tiver)
+    if 'LIMIT' not in sql_upper:
+        sql_limpo += "\nLIMIT 100"
+    
+    # Validar LIMIT não maior que 1000
+    import re
+    limite_match = re.search(r'LIMIT\s+(\d+)', sql_upper)
+    if limite_match:
+        limite = int(limite_match.group(1))
+        if limite > 1000:
+            sql_limpo = re.sub(r'LIMIT\s+\d+', 'LIMIT 1000', sql_limpo, flags=re.IGNORECASE)
+    
+    return True, sql_limpo
 
 def gerar_sql_com_ia(pergunta_usuario: str) -> str:
     """Gera SQL baseado na pergunta do usuário"""
@@ -254,13 +366,43 @@ Sua tarefa é converter perguntas em português para queries SQL PostgreSQL VÁL
 
 INSTRUÇÕES CRÍTICAS:
 - Use APENAS as tabelas e views listadas acima
-- PRIORIZE views de resumo (vw_resumo_vendedores, vw_resumo_clientes) quando aplicável
+- PRIORIZE views de resumo (vw_resumo_vendedores, vw_resumo_clientes, vw_pendencias) quando aplicável
 - Sempre adicione LIMIT (máximo 1000)
 - Retorne APENAS o SQL válido, sem explicações ou markdown
 - Para buscar texto, use ILIKE '%termo%'
 - NUNCA use funções de agregação (COUNT, MAX, etc) dentro de GROUP BY
 - Para contar por objetivo: WHERE question_title ILIKE 'Qual objetivo%' GROUP BY answer_human
-- LEMBRE-SE: views pivotadas AGORA têm assignee_name, status, os_created_at, os_finished_at
+
+🚨 REGRA MAIS IMPORTANTE - LEIA COM ATENÇÃO:
+Quando pedirem "resumo", "detalhes", "o que foi feito", "o que diz", "relata", "informações", "aprofundar", "mais sobre" uma OS específica:
+✅ SEMPRE USE: contele.vw_todas_os_respostas (tem as respostas do formulário!)
+❌ NUNCA USE: contele.contele_os (só tem metadados básicos, não tem respostas!)
+
+🚨 PARA PENDÊNCIAS:
+Quando pedirem sobre "pendências", "pendencia", "OS's que geraram pendência", "pendências abertas":
+✅ USE: contele.vw_pendencias (para listar OS's individuais com pendências)
+✅ USE: contele.vw_resumo_pendencias_vendedor (para ranking por vendedor)
+✅ USE: contele.vw_resumo_pendencias_cliente (para ranking por cliente)
+
+Exemplo CORRETO para "Me passe o resumo da OS 5078":
+SELECT question_title, answer_human, assignee_name, status, poi, os_created_at
+FROM contele.vw_todas_os_respostas
+WHERE os = '5078'
+ORDER BY question_title
+LIMIT 100;
+
+Exemplo CORRETO para "Quais OS's geraram pendência?":
+SELECT os, poi, assignee_name, descricao_pendencia, data_criacao_pendencia, pendencia_aberta
+FROM contele.vw_pendencias
+ORDER BY data_criacao_pendencia DESC
+LIMIT 100;
+
+Exemplo CORRETO para "Mostre as pendências abertas":
+SELECT os, poi, assignee_name, descricao_pendencia, data_criacao_pendencia, status
+FROM contele.vw_pendencias
+WHERE pendencia_aberta = true
+ORDER BY data_criacao_pendencia DESC
+LIMIT 100;
 """
 
     try:
@@ -309,8 +451,15 @@ Analise os resultados SQL e responda de forma clara e objetiva.
 
 FORMATO DA RESPOSTA:
 1. **📊 Resumo:** Resposta direta à pergunta (1-2 frases)
-2. **🔍 Principais Insights:** 3-5 pontos principais dos dados
+2. **🔍 Principais Insights:** 3-5 pontos principais dos dados (organize por tópicos quando for resumo de OS)
 3. **💡 Recomendações:** Sugestões práticas baseadas nos dados (quando aplicável)
+
+IMPORTANTE: Se os dados incluem question_title e answer_human (resumo de OS), organize os insights por categorias:
+- Objetivo da visita
+- Detalhes técnicos
+- Problemas identificados
+- Ações realizadas
+- Pendências/negócios gerados
 
 Use emojis moderadamente e mantenha tom profissional com toques de humor.
 """
@@ -362,11 +511,11 @@ def responder_pergunta_livre(pergunta: str, context: str = "", filters: dict = N
     
     tipo = detectar_tipo_pergunta(pergunta)
     
-    # Conversa casual (cumprimentos, agradecimentos, etc)
+    # Conversa casual
     if tipo == 'casual':
         return conversar_casualmente(pergunta)
     
-    # Meta-perguntas (sobre a própria IA)
+    # Meta-perguntas
     if tipo == 'meta':
         return f"""**Olá, João! Eu sou {IA_CONFIG['nome']} 👋**
 
@@ -382,28 +531,41 @@ def responder_pergunta_livre(pergunta: str, context: str = "", filters: dict = N
 - ✅ Respondo perguntas em linguagem natural sobre os dados
 - ✅ Crio queries SQL automaticamente e otimizadas
 - ✅ Forneço recomendações estratégicas baseadas em dados
+- 🔒 Valido e corrijo SQL automaticamente (segurança)
+- 🚨 Rastreio pendências abertas e fechadas
 
-**🆕 Novidades (views de resumo rápido!):**
+**🆕 Novidades:**
 - Rankings de vendedores por desempenho
 - Top clientes com histórico completo
 - Timeline de atividades mensais
+- Validação automática de queries
+- **Análise de pendências abertas e fechadas**
 
 **💡 Exemplos de perguntas:**
 - "Quantas OS's temos por objetivo?"
 - "Quais os top 10 clientes com mais visitas?"
 - "Qual vendedor/técnico tem mais visitas?"
-- "Mostre OS's de prospecção do último mês"
+- "Me passe o resumo da OS 5078"
+- "Consegue se aprofundar sobre a OS 5102?"
 - "Timeline de atividades dos últimos meses"
-- "Clientes que foram visitados por mais de um vendedor"
+- "Quais OS's geraram pendência?"
+- "Mostre as pendências abertas"
+- "Qual vendedor tem mais pendências em aberto?"
 
 Estou aqui para tornar a análise de dados simples, rápida e eficiente! 🚀"""
     
-    # Perguntas sobre DADOS (gera SQL)
+    # Perguntas sobre DADOS
     try:
         sql = gerar_sql_com_ia(pergunta)
         
         if sql.startswith("--"):
             return f"❌ {sql}"
+        
+        # 🔒 VALIDAR E CORRIGIR SQL
+        valido, sql_ou_erro = validar_e_corrigir_sql(sql)
+        if not valido:
+            return sql_ou_erro
+        sql = sql_ou_erro
         
         colunas, linhas = executar_sql(sql)
         
@@ -426,7 +588,7 @@ def ia_disponivel() -> tuple:
     if not client:
         return False, "❌ Erro ao inicializar OpenAI"
     
-    return True, f"✅ {IA_CONFIG['nome']} disponível - {IA_CONFIG['papel']}"
+    return True, f"✅ {IA_CONFIG['nome']} disponível - {IA_CONFIG['papel']} 🔒 Segurança ativa 🚨 Pendências ativas"
 
 def chat():
     """Interface de chat com a IA"""
@@ -439,7 +601,13 @@ def chat():
     print("   • Quantas OS's temos por objetivo?")
     print("   • Quais os top 10 clientes?")
     print("   • Qual vendedor/técnico tem mais visitas?")
+    print("   • Me passe o resumo da OS 5078")
+    print("   • Consegue se aprofundar sobre a OS 5102?")
     print("   • Timeline de atividades dos últimos meses")
+    print("   • Quais OS's geraram pendência?")
+    print("   • Mostre as pendências abertas")
+    print(f"\n🔒 Segurança: Validação automática de SQL")
+    print(f"🚨 Pendências: Rastreamento de OS's com pendências abertas/fechadas")
     print(f"\nDigite 'sair' para encerrar.\n{'-'*70}\n")
     
     while True:

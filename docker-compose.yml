@@ -1,0 +1,19 @@
+services:
+  contele-app:
+    container_name: contele-app
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8501:8501"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  contele-etl:
+    container_name: contele-etl
+    build: .
+    restart: "no"
+    env_file: .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["python", "contele.py"]
