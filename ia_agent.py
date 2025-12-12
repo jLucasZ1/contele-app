@@ -13,6 +13,8 @@ Versão blindada + memória:
 - Auto-teste de integridade
 - Integração com filtros do dashboard (período padrão)
 - Memória de conversa (histórico por sessão) para manter contexto
+- Modo conversa melhorado (piadas e perguntas fora de dados)
+- Análises mais ricas, com ideias e próximos passos
 """
 import os
 import re
@@ -78,24 +80,22 @@ logger = init_logger()
 # ================== TABELAS / VIEWS PERMITIDAS ==================
 
 TABELAS_PERMITIDAS = {
-    "contele.contele_os",
-    "contele.contele_os_all",
-    "contele.contele_answers",
-    "contele.contele_answers_all",
-    "contele.vw_todas_os_respostas",
-    "contele.vw_prospeccao",
-    "contele.vw_relacionamento",
-    "contele.vw_levantamento_de_necessidade",
-    "contele.vw_visita_tecnica",
-    "contele.vw_resumo_vendedores",
-    "contele.vw_resumo_clientes",
-    "contele.vw_timeline_atividades",
-    "contele.vw_pendencias",
-    "contele.vw_resumo_pendencias_vendedor",
-    "contele.vw_resumo_pendencias_cliente",
-    # adicionadas para as perguntas da supervisora
-    "contele.vw_visitas_status",
-    "contele.vw_portfolio_clientes",
+    'contele.contele_os',
+    'contele.contele.os_all',
+    'contele.contele_answers',
+    'contele.contele_answers_all',
+    'contele.vw_levantamento_de_necessidade',
+    'contele.vw_pendencias',
+    'contele.vw_portifolio_clientes',
+    'contele.vw_prospeccao',
+    'contele.vw_relacionamento',
+    'contele.vw_resumo_clientes',
+    'contele.vw_resumo_vendedores',
+    'contele.vw_timeline_atividades',
+    'contele.vw_todas_os_respostas',
+    'contele.vw_visita_tecnica',
+    'contele.vw_visitas_duracao',
+    'contele.vw_visitas_status'
 }
 
 # ================== MEMÓRIA DE CONVERSA ==================
@@ -114,7 +114,7 @@ def _formatar_historico(
     ]
 
     Retorna um texto compacto com as últimas interações
-    para ser usado como contexto (NÃO como filtro SQL).
+    para ser usado como contexto (inclusive para entender continuidade).
     """
     if not history:
         return ""
@@ -151,6 +151,7 @@ Regras:
 - "mês passado": mês anterior ao atual (mes_atual - 1)
 - "mês de X" ou "mês X": usar ano {ANO_ATUAL} e mês X
 - Se perguntar por mês sem ano: assuma ano {ANO_ATUAL}
+- "este ano", "esse ano", "ano atual": usar intervalo de '{ANO_ATUAL}-01-01' (inclusive) até '{ANO_ATUAL + 1}-01-01' (exclusivo)
 - Nunca usar ano 2023 ou 2024 em nova consulta (a menos que explicitamente dito)
 
 ## TABELAS PRINCIPAIS (1 linha = 1 OS)
@@ -208,9 +209,10 @@ contele.contele_answers_all(...)
 
 - contele.vw_prospeccao / vw_relacionamento / vw_levantamento_de_necessidade / vw_visita_tecnica
   • Cada uma representa um conjunto de OS por tipo de visita/objetivo
+  • Essas views também usam os_created_at como data de referência da OS.
 
 - Outras views usadas no dashboard (exemplo):
-  - contele.vw_visitas_status (1 linha = 1 OS com objetivo, status, vendedor, poi)
+  - contele.vw_visitas_status (1 linha = 1 OS com objetivo, status, vendedor, poi, os_created_at)
   - contele.vw_portfolio_clientes (portfólio Festo/Bosch/Hengst/Wago por cliente)
 
 ## REGRAS CRÍTICAS PARA VISITAS / OS
@@ -253,6 +255,12 @@ contele.contele_answers_all(...)
 7. Usar ILIKE para buscas textuais.
 8. Evitar GROUP BY com agregações impróprias.
 9. Nunca inventar tabela/coluna fora da lista.
+10. Quando a pergunta falar em "visitas concluídas", "visitas realizadas" ou "visitas efetivas"
+    para um vendedor em um período, use a lógica:
+    • total_visitas = COUNT(*) em contele.contele_os (filtrando período e vendedor)
+    • abordagens_sem_sucesso = COUNT(DISTINCT task_id) em contele.vw_todas_os_respostas
+      onde lower(form_title) = 'abordagem sem sucesso' no mesmo período e vendedor
+    • visitas_concluidas = total_visitas - COALESCE(abordagens_sem_sucesso, 0)
 
 ## EXEMPLOS CHAVE
 
@@ -331,8 +339,8 @@ SELECT
   COUNT(*) AS total_oportunidades
 FROM contele.vw_visitas_status v
 JOIN visitas_oportunidade o USING (task_id)
-WHERE v.created_at >= '2025-10-01'
-  AND v.created_at <  '2025-11-01'
+WHERE v.os_created_at >= '2025-10-01'
+  AND v.os_created_at <  '2025-11-01'
 GROUP BY v.objetivo
 ORDER BY total_oportunidades DESC
 LIMIT 100;
@@ -396,22 +404,43 @@ LIMIT 100;
 ### 2) Visitas concluídas, abordagens sem sucesso, taxa de sucesso
 
 Campos chave:
-- Tabela/ view de visitas: contele.vw_visitas_status ou contele.contele_os
+- Tabela/ view de visitas: contele.contele_os (todas as OS/visitas)
 - Formulário de "Abordagem sem sucesso":
   • form_title = 'Abordagem sem sucesso'
   • question_title: 'Situação Encontrada%' (empresa fechada, responsável ausente, recusa…)
 
+🔹 REGRA DE NEGÓCIO IMPORTANTE:
+- "Visitas concluídas" = TODAS as visitas realizadas no período (contele.contele_os)
+  MENOS as visitas que tiveram formulário "Abordagem sem sucesso".
+
 1. "Quantas visitas concluídas o vendedor X realizou no período Y?"
 
+WITH total_visitas AS (
+  SELECT
+    assignee_name,
+    COUNT(*) AS total_visitas
+  FROM contele.contele_os
+  WHERE assignee_name ILIKE '%NOME VENDEDOR%'
+    AND created_at >= '2025-10-01'
+    AND created_at <  '2025-11-01'
+  GROUP BY assignee_name
+),
+abordagens_sem_sucesso AS (
+  SELECT
+    assignee_name,
+    COUNT(DISTINCT task_id) AS abordagens_sem_sucesso
+  FROM contele.vw_todas_os_respostas
+  WHERE lower(form_title) = 'abordagem sem sucesso'
+    AND os_created_at >= '2025-10-01'
+    AND os_created_at <  '2025-11-01'
+  GROUP BY assignee_name
+)
 SELECT
-  assignee_name,
-  COUNT(*) AS visitas_concluidas
-FROM contele.vw_visitas_status
-WHERE assignee_name ILIKE '%NOME VENDEDOR%'
-  AND status ILIKE '%conclu%'
-  AND created_at >= '2025-10-01'
-  AND created_at <  '2025-11-01'
-GROUP BY assignee_name
+  t.assignee_name,
+  t.total_visitas - COALESCE(a.abordagens_sem_sucesso, 0) AS visitas_concluidas
+FROM total_visitas t
+LEFT JOIN abordagens_sem_sucesso a
+  ON t.assignee_name = a.assignee_name
 LIMIT 100;
 
 2. "Quantas abordagens sem sucesso ocorreram no período Y e por qual motivo?"
@@ -431,8 +460,43 @@ LIMIT 100;
 3. "Qual a taxa de sucesso das visitas do vendedor X no período Y?"
    (visitas realizadas ÷ total de tentativas)
 
-→ Total de tentativas = total de OS.
-→ Visitas efetivas = total de OS - abordagens sem sucesso.
+→ Total de tentativas = total de OS (contele.contele_os).
+→ Visitas efetivas = total de OS - abordagens sem sucesso (mesma lógica do item 1).
+
+WITH total_visitas AS (
+  SELECT
+    assignee_name,
+    COUNT(*) AS total_visitas
+  FROM contele.contele_os
+  WHERE assignee_name ILIKE '%NOME VENDEDOR%'
+    AND created_at >= '2025-10-01'
+    AND created_at <  '2025-11-01'
+  GROUP BY assignee_name
+),
+abordagens_sem_sucesso AS (
+  SELECT
+    assignee_name,
+    COUNT(DISTINCT task_id) AS abordagens_sem_sucesso
+  FROM contele.vw_todas_os_respostas
+  WHERE lower(form_title) = 'abordagem sem sucesso'
+    AND os_created_at >= '2025-10-01'
+    AND os_created_at <  '2025-11-01'
+  GROUP BY assignee_name
+)
+SELECT
+  t.assignee_name,
+  t.total_visitas,
+  COALESCE(a.abordagens_sem_sucesso, 0) AS abordagens_sem_sucesso,
+  (t.total_visitas - COALESCE(a.abordagens_sem_sucesso, 0))         AS visitas_concluidas,
+  CASE
+    WHEN t.total_visitas > 0
+    THEN ROUND(100.0 * (t.total_visitas - COALESCE(a.abordagens_sem_sucesso, 0)) / t.total_visitas, 1)
+    ELSE 0
+  END AS taxa_sucesso_percent
+FROM total_visitas t
+LEFT JOIN abordagens_sem_sucesso a
+  ON t.assignee_name = a.assignee_name
+LIMIT 100;
 
 -------------------------------------------------------------------------------
 ### 3) Visitas por objetivo / tipo de visita
@@ -453,8 +517,8 @@ SELECT
   END AS objetivo_legenda,
   COUNT(*) AS total
 FROM contele.vw_visitas_status
-WHERE created_at >= '2025-10-01'
-  AND created_at <  '2025-11-01'
+WHERE os_created_at >= '2025-10-01'
+  AND os_created_at <  '2025-11-01'
 GROUP BY
   CASE
     WHEN status ILIKE '%abordagem sem sucesso%'
@@ -466,28 +530,27 @@ GROUP BY
 ORDER BY total DESC
 LIMIT 100;
 
-2. "Qual vendedor realizou mais visitas de prospecção no período Y?"
+-- "Qual vendedor realizou mais visitas de prospecção no período Y?"
 
 SELECT
   assignee_name,
   COUNT(*) AS total_prospeccao
 FROM contele.vw_visitas_status
 WHERE objetivo ILIKE '%prospec%'
-  AND created_at >= '2025-10-01'
-  AND created_at <  '2025-11-01'
+  AND os_created_at >= '2025-10-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY assignee_name
 ORDER BY total_prospeccao DESC
 LIMIT 100;
 
 -------------------------------------------------------------------------------
 ### 4) Segmento, área visitada, com quem conversou
-
 Campos em vw_todas_os_respostas:
-- Segmento:   question_title ILIKE '%segmento do cliente%'
+- Segmento: question_title ILIKE '%segmento do cliente%'
 - Área visitada: question_title ILIKE '%área visitada%'
 - Com quem conversou: question_title ILIKE '%com quem conversou%' ou '%cargo%'.
 
-1. "Quantas visitas foram feitas para o segmento X no período Y?"
+-- "Quantas visitas foram feitas para o segmento X no período Y?"
 
 SELECT
   COUNT(DISTINCT task_id) AS total_visitas
@@ -495,41 +558,40 @@ FROM contele.vw_todas_os_respostas
 WHERE question_title ILIKE '%segmento do cliente%'
   AND answer_human ILIKE '%SEGMENTO%'
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 LIMIT 100;
 
-2. "Quais segmentos receberam menos visitas no período Y?"
+-- "Quais segmentos receberam menos visitas no período Y?"
 
 SELECT
   LOWER(TRIM(split_part(answer_human, ' - ', 1))) AS segmento,
-  COUNT(DISTINCT task_id)                          AS qtd_visitas
+  COUNT(DISTINCT task_id) AS qtd_visitas
 FROM contele.vw_todas_os_respostas
 WHERE question_title ILIKE '%segmento do cliente%'
   AND answer_human IS NOT NULL
   AND answer_human <> ''
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY LOWER(TRIM(split_part(answer_human, ' - ', 1)))
 ORDER BY qtd_visitas ASC
 LIMIT 100;
 
-3. "Qual a área mais visitada dentro dos clientes no período Y?"
-   (produção, manutenção, engenharia, compras)
+-- "Qual a área mais visitada dentro dos clientes no período Y?"
 
 SELECT
   LOWER(TRIM(answer_human)) AS area_visitada,
-  COUNT(DISTINCT task_id)   AS qtd_visitas
+  COUNT(DISTINCT task_id) AS qtd_visitas
 FROM contele.vw_todas_os_respostas
 WHERE question_title ILIKE '%área visitada%'
   AND answer_human IS NOT NULL
   AND answer_human <> ''
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY LOWER(TRIM(answer_human))
 ORDER BY qtd_visitas DESC
 LIMIT 100;
 
-4. "Quantos clientes ficaram sem visita nos últimos Z dias?"
+-- "Quantos clientes ficaram sem visita nos últimos Z dias?"
 
 WITH clientes_visitados AS (
   SELECT DISTINCT poi
@@ -547,14 +609,14 @@ LEFT JOIN clientes_visitados v
   ON c.poi = v.poi
 WHERE v.poi IS NULL;
 
-5. "Quais clientes receberam mais de uma visita no período Y?"
+-- "Quais clientes receberam mais de uma visita no período Y?"
 
 SELECT
   poi,
   COUNT(*) AS qtd_visitas
 FROM contele.contele_os
 WHERE created_at >= '2025-10-01'
-  AND created_at <  '2025-11-01'
+  AND created_at < '2025-11-01'
 GROUP BY poi
 HAVING COUNT(*) > 1
 ORDER BY qtd_visitas DESC
@@ -562,45 +624,43 @@ LIMIT 100;
 
 -------------------------------------------------------------------------------
 ### 5) Sintomas, causas, ações, recomendações
-
 Campos em vw_todas_os_respostas:
 - 'Sintomas relatados': question_title ILIKE '%sintomas%'
 - 'Causas identificadas': question_title ILIKE '%causas identificadas%'
 - 'Ações realizadas': question_title ILIKE '%ações realizadas%'
 - 'Recomendações de ações futuras': question_title ILIKE '%recomenda%' OR '%ações futuras%'
 
-1. "Quais foram os problemas mais relatados pelos clientes no período Y?"
+-- "Quais foram os problemas mais relatados pelos clientes no período Y?"
 
 SELECT
   LOWER(TRIM(answer_human)) AS problema,
-  COUNT(DISTINCT task_id)   AS total
+  COUNT(DISTINCT task_id) AS total
 FROM contele.vw_todas_os_respostas
 WHERE question_title ILIKE '%sintomas%'
   AND answer_human IS NOT NULL
   AND answer_human <> ''
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY LOWER(TRIM(answer_human))
 ORDER BY total DESC
 LIMIT 100;
 
-2. "Quais causas foram mais identificadas?"
-   (mecânicas, elétricas, eletrônicas, software, mau uso)
+-- "Quais causas foram mais identificadas?"
 
 SELECT
-  LOWER(TRIM(answer_human)) AS causa,
-  COUNT(DISTINCT task_id)   AS total
+  LOWER(TRIM(answer_human)) As causa,
+  COUNT(DISTINCT task_id) AS total
 FROM contele.vw_todas_os_respostas
 WHERE question_title ILIKE '%causas identificadas%'
   AND answer_human IS NOT NULL
   AND answer_human <> ''
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY LOWER(TRIM(answer_human))
 ORDER BY total DESC
 LIMIT 100;
 
-3. "Quantas visitas tiveram diagnóstico mecânico no período Y?"
+-- "Quantas visitas tiveram diagnóstico mecânico no período Y?"
 
 SELECT
   COUNT(DISTINCT task_id) AS visitas_diagnostico_mecanico
@@ -608,10 +668,10 @@ FROM contele.vw_todas_os_respostas
 WHERE question_title ILIKE '%causas identificadas%'
   AND answer_human ILIKE '%mecânic%'
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 LIMIT 100;
 
-4. "Quantas recomendações de ações futuras foram registradas no período Y?"
+-- "Quantas recomendações de ações futuras foram registradas no período Y?"
 
 SELECT
   COUNT(DISTINCT task_id) AS visitas_com_recomendacao
@@ -620,19 +680,20 @@ WHERE question_title ILIKE '%recomenda%'
   AND answer_human IS NOT NULL
   AND answer_human <> ''
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 LIMIT 100;
 
 -------------------------------------------------------------------------------
 ### 6) Insatisfação, feedback, acompanhamento, relacionamento
-
 Campos:
 - Insatisfação: question_title ILIKE '%insatisfa%'
-- Feedback:    question_title ILIKE '%feedback%'
-- Acompanhamento / follow-up: question_title ILIKE '%acompanh%' OR '%follow%'
+- Feedback: question_title ILIKE '%feedback%'
+- Acompanhamento / follow-up:
+  • question_title ILIKE '%acompanh%' OR '%follow%' em vw_todas_os_respostas
+  • OU motivo_da_visita em vw_relacionamento (por exemplo 'Acompanhamento / follow-up')
 - Visitas de relacionamento: objetivo/tipo de visita = 'Relacionamento' ou similar.
 
-1. "Quantos clientes relataram alguma insatisfação no período Y?"
+-- "Quantos clientes relataram alguma insatisfação no período Y?"
 
 SELECT
   COUNT(DISTINCT poi) AS clientes_insatisfeitos
@@ -641,40 +702,41 @@ WHERE question_title ILIKE '%insatisfa%'
   AND answer_human IS NOT NULL
   AND answer_human <> ''
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 LIMIT 100;
 
-2. "Quantas visitas de relacionamento foram realizadas no período Y?"
+-- "Quantas visitas de relacionamento foram realizadas no período Y?"
 
 SELECT
   COUNT(*) AS visitas_relacionamento
 FROM contele.vw_visitas_status
 WHERE objetivo ILIKE '%relacionamento%'
-  AND created_at >= '2025-10-01'
-  AND created_at <  '2025-11-01'
+  AND os_created_at >= '2025-10-01'
+  AND os_created_at < '2025-11-01'
 LIMIT 100;
 
-3. "Quais clientes receberam mais visitas de follow-up?"
+-- "Quais clientes receberam mais visitas de follow-up?"
 
 SELECT
   poi,
   COUNT(*) AS qtd_visitas_followup
-FROM contele.vw_visitas_status
-WHERE objetivo ILIKE '%follow%' OR objetivo ILIKE '%acompanh%'
+FROM contele.vw_relacionamento
+WHERE (motivo_da_visita ILIKE '%follow%' OR motivo_da_visita ILIKE '%acompanh%')
+  AND os_created_at >= '2025-01-01'
+  AND os_created_at < '2025-12-11'
 GROUP BY poi
 ORDER BY qtd_visitas_followup DESC
 LIMIT 100;
 
 -------------------------------------------------------------------------------
 ### 7) Prospecção, concorrentes, percepção, uso de produtos
-
 Campos:
 - Objetivo/tipo de visita = Prospecção -> vw_visitas_status ou vw_prospeccao.
 - Concorrentes: question_title ILIKE '%concorrente%'
 - Interesse em conhecer TecnoTop: question_title ILIKE '%conhecer a tecnotop%'
 - Uso de produtos Festo/Bosch/Hengst/Wago: vw_portfolio_clientes.
 
-1. "Qual o total de visitas de prospecção feitas pelo vendedor X?"
+-- "Qual o total de visitas de prospecção feitas pelo vendedor X?"
 
 SELECT
   assignee_name,
@@ -682,30 +744,28 @@ SELECT
 FROM contele.vw_visitas_status
 WHERE objetivo ILIKE '%prospec%'
   AND assignee_name ILIKE '%NOME VENDEDOR%'
-  AND created_at >= '2025-10-01'
-  AND created_at <  '2025-11-01'
+  AND os_created_at >= '2025-10-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY assignee_name
 LIMIT 100;
 
-2. "Em quantas visitas o cliente mencionou concorrentes?"
-   / "Quais concorrentes mais mencionados?"
-   / "Quais concorrentes foram mais mencionados no período Y?"
+-- "Em quantas visitas o cliente mencionou concorrentes?"
 
 SELECT
   LOWER(TRIM(answer_human)) AS concorrente,
-  COUNT(DISTINCT poi)       AS qtd_clientes,
-  COUNT(DISTINCT task_id)   AS qtd_visitas
+  COUNT(DISTINCT poi) AS qtd_clientes,
+  COUNT(DISTINCT task_id) AS qtd_visitas
 FROM contele.vw_todas_os_respostas
 WHERE question_title ILIKE '%concorrente%'
   AND answer_human IS NOT NULL
   AND answer_human <> ''
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY LOWER(TRIM(answer_human))
 ORDER BY qtd_visitas DESC
 LIMIT 100;
 
-3. "Quantos clientes demonstraram interesse em conhecer a Tecnotop pela primeira vez?"
+-- "Quantos clientes demonstraram interesse em conhecer a Tecnotop pela primeira vez?"
 
 SELECT
   COUNT(DISTINCT poi) AS clientes_interessados
@@ -713,10 +773,10 @@ FROM contele.vw_todas_os_respostas
 WHERE question_title ILIKE '%conhecer a tecnotop%'
   AND answer_human ILIKE '%sim%'
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 LIMIT 100;
 
-4. "Quais clientes utilizam produtos Festo, Bosch, Hengst ou Wago?"
+-- "Quais clientes utilizam produtos Festo, Bosch, Hengst ou Wago?"
 
 SELECT
   poi,
@@ -735,19 +795,19 @@ LIMIT 200;
 -------------------------------------------------------------------------------
 ### 8) Comparações entre vendedores e evolução
 
-1. "Comparar a quantidade de visitas realizadas por cada vendedor no período Y."
+-- "Comparar a quantidade de visitas realizadas por cada vendedor no período Y."
 
 SELECT
   assignee_name,
   COUNT(*) AS total_visitas
 FROM contele.contele_os
 WHERE created_at >= '2025-10-01'
-  AND created_at <  '2025-11-01'
+  AND created_at < '2025-11-01'
 GROUP BY assignee_name
 ORDER BY total_visitas DESC
 LIMIT 100;
 
-2. "Comparar pendências geradas por cada vendedor no período Y."
+-- "Comparar pendências geradas por cada vendedor no período Y."
 
 SELECT
   assignee_name,
@@ -755,18 +815,18 @@ SELECT
 FROM contele.vw_pendencias
 WHERE gerou_pendencia = true
   AND os_created_at >= '2025-10-01'
-  AND os_created_at <  '2025-11-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY assignee_name
 ORDER BY total_pendencias DESC
 LIMIT 100;
 
-3. "Comparar quantidade de novos clientes abordados entre os vendedores no período Y."
+-- "Comparar quantidade de novos clientes abordados entre os vendedores no período Y."
 
 WITH visitas_periodo AS (
   SELECT poi, assignee_name, MIN(created_at) AS primeira_visita
   FROM contele.contele_os
   WHERE created_at >= '2025-10-01'
-    AND created_at <  '2025-11-01'
+    AND created_at < '2025-11-01'
   GROUP BY poi, assignee_name
 )
 SELECT
@@ -777,15 +837,15 @@ GROUP BY assignee_name
 ORDER BY novos_clientes_abordados DESC
 LIMIT 100;
 
-4. "Comparar visitas por objetivo entre os vendedores no período Y."
+-- "Comparar visitas por objetivo entre os vendedores no período Y."
 
 SELECT
   assignee_name,
   objetivo,
   COUNT(*) AS total_visitas
 FROM contele.vw_visitas_status
-WHERE created_at >= '2025-10-01'
-  AND created_at <  '2025-11-01'
+WHERE os_created_at >= '2025-10-01'
+  AND os_created_at < '2025-11-01'
 GROUP BY assignee_name, objetivo
 ORDER BY assignee_name, total_visitas DESC
 LIMIT 100;
@@ -793,14 +853,7 @@ LIMIT 100;
 -------------------------------------------------------------------------------
 ### 9) Variações, crescimento e múltiplas pendências
 
-1. "Quais motivos de abordagem sem sucesso aumentaram no último período?"
-   → Comparar dois períodos (ex.: mês atual vs mês anterior) usando a mesma lógica de contagem
-     por motivo da view de 'abordagem sem sucesso'.
-
-2. "Quais segmentos mais cresceram em visitas em relação ao mês anterior?"
-   → Montar CTE com contagem por segmento em dois períodos e calcular diferença/percentual.
-
-3. "Quais visitas resultaram em mais de uma pendência?"
+-- "Quais visitas resultaram em mais de uma pendência?"
 
 SELECT
   task_id,
@@ -814,11 +867,6 @@ HAVING COUNT(*) > 1
 ORDER BY qtd_pendencias DESC
 LIMIT 100;
 
-4. "Quais áreas internas dos clientes geram mais oportunidades?"
-   → Cruzar:
-   - Áreas internas (pergunta de 'área visitada' ou 'área do contato') em vw_todas_os_respostas
-   - Com visitas que geraram negócio/pendência ou com registros em vw_pendencias.
-
 -------------------------------------------------------------------------------
 USO GERAL:
 - Para cada pergunta da gestora, usar estes exemplos como guia:
@@ -831,6 +879,16 @@ USO GERAL:
 
 
 def detectar_tipo_pergunta(pergunta: str) -> str:
+    """
+    Classifica a pergunta em:
+    - 'casual': papo, piada, comentário, coisa que não precisa de SQL
+    - 'meta'  : perguntas sobre o próprio agente
+    - 'dados' : perguntas sobre visitas, OS, clientes, vendedores etc.
+
+    Regra importante:
+    - Se nada bater claramente com 'dados' ou 'meta', cai em 'casual'.
+    Isso evita casos tipo "Me pergunte que mário" irem para o banco.
+    """
     pergunta_lower = pergunta.lower().strip()
 
     conversas_casuais = [
@@ -867,6 +925,11 @@ def detectar_tipo_pergunta(pergunta: str) -> str:
         "top",
         "massa",
         "dahora",
+        # palavrinhas típicas de piada / conversa
+        "me pergunte que mário",
+        "que mario",
+        "vc conhece o mario",
+        "você conhece o mario",
     ]
 
     meta_keywords = [
@@ -891,7 +954,8 @@ def detectar_tipo_pergunta(pergunta: str) -> str:
         "que tipo de pergunta",
     ]
 
-    dados_keywords = [
+    # Palavras de métrica / ação típicas de pergunta de dados
+    metric_keywords = [
         "quantas",
         "quantos",
         "quanto",
@@ -899,17 +963,40 @@ def detectar_tipo_pergunta(pergunta: str) -> str:
         "soma",
         "média",
         "media",
-        "mostre",
+        "ranking",
+        "top",
+        "último",
+        "ultima",
+        "comparar",
+        "comparação",
+        "comparacao",
+        "diferença",
+        "diferenca",
+        "resumo",
+        "detalhes",
+        "listar",
         "liste",
+        "mostre",
         "exiba",
         "busque",
         "encontre",
         "procure",
+        "melhor",
+        "pior",
+    ]
+
+    # Palavras de domínio do Contele / visitas
+    domain_keywords = [
+        "visita",
+        "visitas",
         "os",
         "os's",
-        "visita",
+        "ordem de serviço",
+        "ordem de servico",
         "cliente",
+        "clientes",
         "vendedor",
+        "vendedores",
         "técnico",
         "tecnico",
         "poi",
@@ -919,53 +1006,45 @@ def detectar_tipo_pergunta(pergunta: str) -> str:
         "prospeccao",
         "relacionamento",
         "levantamento",
-        "ranking",
-        "top",
-        "último",
-        "ultima",
-        "mês",
-        "mes",
-        "ano",
-        "período",
-        "periodo",
         "status",
-        "concluída",
-        "concluida",
-        "pendente",
-        "finalizada",
-        "comparar",
-        "comparação",
-        "comparacao",
-        "diferença",
-        "diferenca",
-        "resumo",
-        "detalhes",
-        "informações",
-        "informacoes",
-        "relata",
-        "foi feito",
-        "diz",
-        "sobre",
-        "aprofundar",
-        "mais sobre",
-        "essa os",
-        "desta os",
-        "da os",
-        "essa visita",
-        "esse cliente",
-        "consegue",
-        "pode",
         "pendência",
         "pendencias",
+        "pendencia",
+        "segmento",
+        "área visitada",
+        "area visitada",
+        "formulário",
+        "formulario",
+        "follow-up",
+        "follow up",
+        "acompanhamento",
+        "desempenho",
     ]
 
-    if any(pergunta_lower.startswith(c) or pergunta_lower == c for c in conversas_casuais):
+    if any(pergunta_lower == c or pergunta_lower.startswith(c) for c in conversas_casuais):
         return "casual"
+
     if any(m in pergunta_lower for m in meta_keywords):
         return "meta"
-    if any(d in pergunta_lower for d in dados_keywords):
+
+    # Se tem vocabulário do domínio, é forte candidato a ser pergunta de dados
+    tem_dom = any(d in pergunta_lower for d in domain_keywords)
+    tem_metricas = any(m in pergunta_lower for m in metric_keywords)
+
+    # heurística:
+    # - Se tem domínio E (métrica ou verbo de ação) -> dados
+    # - Se tem só domínio (ex: "me explica essa OS 5078") -> também dados
+    if tem_dom and (tem_metricas or True):
         return "dados"
-    return "dados"
+
+    # Se não tem vocabulário de domínio mas tem métrica explícita,
+    # pode ser que seja dado, mas é melhor cair em conversa casual
+    # para evitar SQL aleatório em piada tipo "me pergunte que mário".
+    if tem_metricas and not tem_dom:
+        return "casual"
+
+    # Fallback: trata como conversa.
+    return "casual"
 
 # ================== VALIDAÇÃO / CORREÇÃO DE SQL ==================
 
@@ -987,7 +1066,7 @@ def _extrair_tabelas(sql: str) -> set:
 def _tem_colunas_invalidas(sql: str) -> bool:
     """
     Bloqueia o uso de colunas que NÃO existem na base/conteúdo real
-    de vw_pendencias (para evitar exatamente o erro que você tomou).
+    de vw_pendencias.
     """
     sql_lower = sql.lower()
     if "data_criacao_pendencia" in sql_lower:
@@ -1055,22 +1134,22 @@ def validar_e_corrigir_sql(sql: str) -> tuple:
         if re.search(rf"\b{cmd}\b", sql_upper):
             return False, f"❌ Comando {cmd} não permitido"
 
+    # valida anos: permite 2024 até ANO_ATUAL+1 (para limites exclusivos de período)
     anos = re.findall(r"\b(20\d{2})[-/]", sql_limpo)
+    limite_superior = ANO_ATUAL + 1
+
     for ano in anos:
         ano_int = int(ano)
-        if ano_int < 2024 or ano_int > ANO_ATUAL:
+        if ano_int < 2024 or ano_int > limite_superior:
             return (
                 False,
-                f"❌ Ano {ano_int} inválido na consulta (corrija para {ANO_ATUAL} se aplicável)",
+                f"❌ Ano {ano_int} inválido na consulta (use anos entre 2024 e {limite_superior})",
             )
 
     tabelas_usadas = _extrair_tabelas(sql_limpo)
 
-    # 🔧 PONTO CRÍTICO: só validamos nomes totalmente qualificados (schema.tabela).
-    # CTEs como visitas_com_pendencia, abordagens_sem_sucesso, clientes_visitados
-    # NÃO têm ponto, então não entram nessa validação.
+    # Só validamos nomes totalmente qualificados (schema.tabela).
     for t in tabelas_usadas:
-        # Ignora CTE / alias / nome sem schema
         if "." not in t:
             continue
         if t not in TABELAS_PERMITIDAS:
@@ -1138,7 +1217,8 @@ def _montar_bloco_filtros(filters: Optional[Dict[str, Any]]) -> str:
   Ao gerar SQL, quando a pergunta NÃO mencionar período, aplique:
     • Para tabelas contele.contele_os:
         o.created_at >= '{di_iso}' AND o.created_at < '{df_plus1_iso}'
-    • Para views com os_created_at (ex.: vw_todas_os_respostas e vw_pendencias):
+    • Para views com os_created_at (ex.: vw_todas_os_respostas, vw_pendencias,
+      vw_visitas_status, vw_relacionamento, vw_visita_tecnica):
         os_created_at >= '{di_iso}' AND os_created_at < '{df_plus1_iso}'
 
 - Vendedores selecionados no dashboard: {vendedores}
@@ -1174,7 +1254,7 @@ def gerar_sql_com_ia(
     - Schema do Contele
     - Regras de contagem de visitas/OS
     - Filtros do dashboard como período padrão (quando o usuário não especifica datas)
-    - Histórico de conversa (para entender contexto, não como filtro SQL)
+    - Histórico de conversa para entender continuidade (reaproveitar vendedor/período quando fizer sentido)
     """
     if not client:
         return "-- Erro: OpenAI não configurada"
@@ -1187,6 +1267,7 @@ def gerar_sql_com_ia(
 - Se perguntar "mês de 10": usar intervalo [{ANO_ATUAL}-10-01, {ANO_ATUAL}-11-01)
 - "este mês": [{ANO_ATUAL}-{MES_ATUAL:02d}-01, primeiro dia do próximo mês)
 - "mês passado": mês anterior ao atual
+- "este ano", "esse ano", "ano atual": [{ANO_ATUAL}-01-01, {ANO_ATUAL + 1}-01-01)
 - Não usar ano 2023 ou 2024 sem menção explícita
 """
 
@@ -1201,6 +1282,18 @@ Converta perguntas em SQL PostgreSQL válido.
 
 {filtros_bloco}
 
+REGRAS DE CONTINUIDADE DE CONVERSA:
+- Você verá um histórico recente com respostas anteriores e queries SQL executadas.
+- Quando o usuário fizer perguntas do tipo:
+    • "E quantas ele fez sem sucesso?"
+    • "E desse vendedor?"
+    • "E nesse mesmo período?"
+  reaproveite, por padrão:
+    • O mesmo vendedor / grupo de vendedores usado na pergunta anterior.
+    • O mesmo intervalo de datas da pergunta anterior ou do SQL anterior.
+- Só mude vendedor ou período se o usuário falar explicitamente outro nome ou outra faixa de datas.
+- Não invente filtros novos com base só na sua intuição; a continuidade deve seguir o que já apareceu nas perguntas/queries anteriores.
+
 INSTRUÇÕES GERAIS:
 - Usar views e tabelas corretas conforme regras (principal para detalhes de OS: vw_todas_os_respostas).
 - PARA CONTAR VISITAS / OS:
@@ -1214,8 +1307,10 @@ INSTRUÇÕES GERAIS:
   FROM contele.contele_os
   ORDER BY created_at DESC
   LIMIT 1.
-- O histórico de conversa serve APENAS para entender o contexto do que o usuário está perguntando
-  (ex.: "e desse vendedor?", "e no mês passado?"), mas NUNCA como filtro automático de datas, vendedores ou clientes.
+- O histórico de conversa serve para:
+  • Entender continuações (por exemplo, "e desse vendedor?", "e no mesmo período?")
+  • Reaproveitar período/vendedor da pergunta anterior quando ficar claro que é continuidade.
+  Mas NÃO deve ser usado para criar filtros completamente novos que o usuário nunca citou.
 """
 
     ultima_excecao = None
@@ -1226,7 +1321,7 @@ INSTRUÇÕES GERAIS:
 
             if historico_txt:
                 user_content += (
-                    "\n\nHistórico recente da conversa (somente contexto; não use como filtro SQL):\n"
+                    "\n\nHistórico recente da conversa (inclui respostas anteriores e SQL já executado):\n"
                     f"{historico_txt}"
                 )
 
@@ -1243,6 +1338,7 @@ INSTRUÇÕES GERAIS:
                     {"role": "user", "content": user_content},
                 ],
                 temperature=0.1,
+                max_tokens=600,
             )
             sql = response.choices[0].message.content.strip()
             sql = sql.replace("```sql", "").replace("```", "").strip()
@@ -1322,6 +1418,12 @@ def analisar_resultados_com_ia(
     Usa métricas numéricas da query (COUNT, SUM, AVG, etc.),
     sem confundir len(linhas) com total de visitas/OS.
     Utiliza o histórico apenas para coerência narrativa.
+
+    Estilo:
+    - Resposta direta à pergunta
+    - Contexto curto
+    - 1–3 ideias práticas (quando fizer sentido)
+    - Pode sugerir próximos passos ("próxima análise que eu faria é...").
     """
     if not client:
         return "Erro: OpenAI não configurada"
@@ -1356,12 +1458,17 @@ def analisar_resultados_com_ia(
     system_prompt = f"""Você é {IA_CONFIG['nome']}, {IA_CONFIG['papel']} da {IA_CONFIG['empresa']}.
 Tom: {IA_CONFIG['tom']}. 
 
-REGRAS IMPORTANTES (NÚMEROS):
+FOCO EM NÚMEROS (SEM VIAJAR):
 - Use SEMPRE os valores de `metricas_numericas` como base principal para contagens, somas e médias.
-- `total_linhas` é apenas o número de linhas retornadas pela query, NÃO é o total de OS, visitas, etc.
-- Se existir `metricas_numericas.total_os`, `metricas_numericas.total_visitas`, etc., esses são os números principais.
-- Quando não houver métricas numéricas, descreva o padrão das linhas do preview.
-- Use o histórico recente da conversa apenas para manter coerência na explicação, sem inventar números.
+- `total_linhas` é só o número de linhas retornadas pela query, NÃO é o total de OS/visitas se a query estiver agrupada.
+- Se existir `metricas_numericas.total_os`, `metricas_numericas.total_visitas`, `metricas_numericas.total_abordagens_sem_sucesso` etc., use esses campos de forma explícita.
+- Quando não houver métricas numéricas, descreva o padrão das linhas do preview, sem inventar contagens globais.
+
+NADA DE NEGAR COISA SEM DADO:
+- Nunca afirme que "não houve abordagens sem sucesso", "não teve pendência", "não existe registro" se:
+  • não houver uma métrica numérica claramente igual a 0 (ex.: total_abordagens_sem_sucesso = 0), ou
+  • a própria query não for construída para contar isso.
+- Se você não tiver certeza, seja neutro: descreva o que apareceu nos resultados e pare por aí.
 
 TRATAMENTO ESPECIAL DE OBJETIVOS / ABORDAGENS:
 - Se os resultados tiverem colunas como 'objetivo' ou 'objetivo_legenda' junto com uma métrica (ex.: total_os, total, qtd_visitas, etc.):
@@ -1374,27 +1481,23 @@ TRATAMENTO ESPECIAL DE OBJETIVOS / ABORDAGENS:
         - 'sem objetivo'
         - 'sem objetivo informado'
     interprete isso assim:
-        → Em contexto de visitas (vw_visitas_status, visitas por objetivo, etc.), 
-          descreva como "Abordagens sem sucesso ou visitas sem objetivo definido",
-          e NÃO trate automaticamente como falha de processo.
-    Você pode falar algo como:
-        "Além disso, há 4 abordagens sem sucesso/sem objetivo definido."
+        → Em contexto de visitas (vw_visitas_status, visitas por objetivo, etc.),
+          descreva de forma neutra, como "visitas sem objetivo definido" ou "registros sem objetivo informado".
+- Não fique repetindo que isso é "erro de preenchimento" por padrão; só comente isso se a pergunta for sobre qualidade de dados.
 
-- NÃO fique repetindo que isso é "erro de categorização" ou "ponto de atenção" por padrão.
-  Só faça esse tipo de comentário se:
-  • a própria pergunta do usuário for sobre qualidade dos registros, problemas de preenchimento,
-    campos obrigatórios, categorização etc.
-  • OU se a quantidade de registros sem objetivo for claramente relevante (por exemplo, muito alta).
+ESTILO DA RESPOSTA:
+- Fale como se estivesse explicando para o João ali do seu lado: direto, natural e sem cara de relatório corporativo.
+- Você pode usar 1 ou 2 emojis no máximo, se combinar com o tom, mas NÃO monte blocos fixos tipo:
+    "📊 Resumo direto", "🔍 Principais insights", "💡 Recomendações".
+- Nada de seções com títulos; entregue em 2–5 parágrafos curtos.
+- Ordem da resposta:
+    1) Responda a pergunta de forma direta, com o número ou ranking principal.
+    2) Contextualize: compare vendedores/clients, mostre concentrações, outliers.
+    3) Dê 1–3 ideias práticas de ação baseadas nos dados (ex.: focar em certo cliente, replicar comportamento de um vendedor).
+    4) Se fizer sentido, sugira uma próxima análise ("se você quiser aprofundar, eu olharia...").
+- Se a pergunta for uma coisa mais descontraída (ex.: "e o Gabe?", "quem é o melhor vendedor?"), mantenha o humor, mas SEM perder a precisão nos números.
 
-RESUMINDO:
-- Categoria "Abordagem sem sucesso" = métrica de tentativa de visita que não deu certo.
-- Categoria "Sem objetivo informado" = trate de forma neutra; você pode mencionar o número,
-  mas NÃO assuma automaticamente que é erro.
-
-Formate a resposta em:
-1. 📊 Resumo direto, com números explícitos (ex: "Relacionamento: 204 OS, Prospecção: 59, Abordagens sem sucesso: 4").
-2. 🔍 Principais insights (máx. 5).
-3. 💡 Recomendações objetivas (se fizer sentido).
+Resumo: responda como um analista sênior explicando para um gestor que você conhece bem (João), com insight de negócio e pegada de "segundo cérebro", SEM inventar número.
 """
 
     try:
@@ -1403,12 +1506,14 @@ Formate a resposta em:
         ]
         if historico_txt:
             user_content_parts.append(
-                "Histórico recente da conversa (use apenas para coerência da narrativa, não para alterar os números):\n"
+                "Histórico recente da conversa (use só para manter o fio da conversa, não para alterar os números):\n"
                 f"{historico_txt}\n"
             )
         user_content_parts.append(f"SQL executado:\n{sql}\n")
         user_content_parts.append(f"Resultados estruturados (JSON):\n{resultado_json}\n")
-        user_content_parts.append("Faça a análise seguindo as regras.")
+        user_content_parts.append(
+            "Faça a análise seguindo as regras acima. Não precisa ser curto demais; pode explicar com calma."
+        )
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -1417,6 +1522,7 @@ Formate a resposta em:
                 {"role": "user", "content": "\n".join(user_content_parts)},
             ],
             temperature=0.6,
+            max_tokens=650,
         )
         texto = response.choices[0].message.content.strip()
         logger.info(
@@ -1450,7 +1556,13 @@ def conversar_casualmente(
     system_prompt = f"""Você é {IA_CONFIG['nome']}, {IA_CONFIG['papel']} da {IA_CONFIG['empresa']}.
 Tom: {IA_CONFIG['tom']}
 Especialidade: {IA_CONFIG['especialidade']}
-Conversa casual com João. Não mencione banco/SQL espontaneamente.
+
+Aqui você está em modo de conversa casual com o João, não em modo analítico.
+- Responda como um colega de trabalho mais experiente.
+- Pode usar humor leve, responder piadas (incluindo as envolvendo "Mário") e comentar a situação.
+- Não mencione banco/SQL espontaneamente.
+- Só puxe assunto de dado se o João claramente pedir.
+
 Use o histórico recente apenas para manter o fio da conversa.
 """
 
@@ -1471,6 +1583,7 @@ Use o histórico recente apenas para manter o fio da conversa.
                 {"role": "user", "content": user_content},
             ],
             temperature=0.9,
+            max_tokens=400,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -1502,23 +1615,19 @@ def responder_pergunta_livre(
         return conversar_casualmente(pergunta, history=history)
 
     if tipo == "meta":
-        return f"""**Olá, João! Eu sou {IA_CONFIG['nome']} 👋**
-🎯 Papel: {IA_CONFIG['papel']} na {IA_CONFIG['empresa']}
-💼 Especialidade: {IA_CONFIG['especialidade']}
-🎨 Estilo: {IA_CONFIG['tom']}
-🔧 Capacidades:
-- Analiso OS's, clientes, vendedores e objetivos
-- Gero e valido SQL (somente leitura)
-- Traço rankings, timelines e pendências
-- Resumos detalhados de visitas (vw_todas_os_respostas)
-🛡 Blindagem ativa: validação, retry, logs e controle temporal
-💡 Exemplos:
-- Quantas OS por objetivo?
-- Resumo da OS 5078
-- Pendências abertas
-- Ranking de vendedores
-- Clientes com mais visitas
-🚀 Pronto para sua pergunta sobre dados!"""
+        return f"""Olá, João! Eu sou {IA_CONFIG['nome']} 👋
+Sou {IA_CONFIG['papel']} na {IA_CONFIG['empresa']} e trabalho focado em:
+- Visitas técnicas, OS, clientes e vendedores
+- Geração e validação de SQL (somente leitura)
+- Rankings, pendências, objetivos de visita e resumos de OS
+- E, quando fizer sentido, sugestões práticas de ação para o time
+
+Posso, por exemplo:
+- Contar visitas por vendedor, objetivo, segmento, área, etc.
+- Resumir uma OS específica (via vw_todas_os_respostas)
+- Trazer pendências por vendedor/cliente ou período
+- Montar comparações, percentuais de conversão e pontos de atenção.
+- E ainda trocar ideia com você sobre o que fazer com esses números. 😉"""
 
     try:
         sql_bruto = gerar_sql_com_ia(
@@ -1532,7 +1641,7 @@ def responder_pergunta_livre(
 
         valido, sql_validado = validar_e_corrigir_sql(sql_bruto)
         if not valido:
-            if "genérica" in sql_validado.lower() or "genérica" in sql_validado:
+            if "genérica" in sql_validado.lower():
                 return (
                     f"{sql_validado}\n🔁 DICA: Especifique OS, período ou objetivo."
                 )
@@ -1550,8 +1659,8 @@ def responder_pergunta_livre(
         )
         return (
             f"{analise}\n\n---\n"
-            f"**📌 Query executada:**\n```sql\n{sql_validado}\n```\n"
-            f"**📊 Linhas retornadas:** {len(linhas)}"
+            f"**Query executada:**\n```sql\n{sql_validado}\n```\n"
+            f"**Linhas retornadas:** {len(linhas)}"
         )
     except Exception as e:
         logger.error(f"Erro pipeline dados: {e}")
@@ -1581,6 +1690,7 @@ def testar_openai() -> str:
                 {"role": "user", "content": "ping"},
             ],
             temperature=0,
+            max_tokens=5,
         )
         return "✅ OpenAI OK"
     except Exception as e:
@@ -1624,6 +1734,7 @@ def chat():
     print(" • Clientes com mais visitas este mês")
     print(" • Quantas OS por objetivo?")
     print(" • Última OS registrada")
+    print(" • (ou simplesmente bater papo comigo mesmo 😄)")
     print(f"\n🛡 Blindagem ativa | 🗓 Ano: {ANO_ATUAL} Mês: {MES_ATUAL}")
     print("Digite 'teste' para auto-diagnóstico, 'sair' para encerrar.\n" + "-" * 70)
 

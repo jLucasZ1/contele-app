@@ -7,49 +7,21 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
-# IA integrada ao dashboard
 from ia_agent import ia_disponivel, responder_pergunta_livre
+from login import check_login  # ⬅️ login externo
 
 # ================== ENV / CONFIG ==================
 load_dotenv()
 if os.path.exists(".env.local"):
     load_dotenv(".env.local", override=True)
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 st.set_page_config(page_title="TecnoTop | Contele Forms", layout="wide")
 
-# Custom CSS para sidebar mais profissional
-st.markdown(
-    """
-<style>
-    [data-testid="stSidebar"] {
-        background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-    }
-    [data-testid="stSidebar"] h1, 
-    [data-testid="stSidebar"] h2 {
-        color: #ffffff;
-        font-weight: 700;
-        letter-spacing: 0.5px;
-    }
-    [data-testid="stSidebar"] label {
-        color: #e0e0e0;
-        font-weight: 600;
-        font-size: 0.95rem;
-    }
-    [data-testid="stSidebar"] hr {
-        border-color: #ffffff33;
-        margin: 1.5rem 0;
-    }
-    [data-testid="stSidebar"] p {
-        color: #b0b0b0;
-        font-size: 0.85rem;
-        line-height: 1.4;
-    }
-</style>
-""",
-    unsafe_allow_html=True,
-)
+# 🔐 CHAMA O LOGIN ANTES DE QUALQUER OUTRA COISA
+check_login()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ================== HELPERS DB ==================
 @st.cache_resource(show_spinner=False)
@@ -1209,7 +1181,7 @@ with tab_ia:
 
         if limpar:
             st.session_state.chat_history = []
-            st.rerun()
+            st.rerun()  # ✅ substitui st.experimental_rerun()
 
         if enviar and user_msg.strip():
             st.session_state.chat_history.append(
@@ -1241,7 +1213,7 @@ with tab_ia:
                     "timestamp": datetime.now(),
                 }
             )
-            st.rerun()
+            st.rerun()  # ✅ substitui st.experimental_rerun()
 
         st.divider()
 
